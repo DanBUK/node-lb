@@ -1,0 +1,118 @@
+#!/usr/bin/env node
+/* node-lb.js
+ * A simple TCP load balancer.
+ * 
+ * Copyright (c) 2010 Daniel Bartlett <dan@f-box.org>
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * Except as contained in this notice, the name(s) of the above copyright holders 
+ * shall not be used in advertising or otherwise to promote the sale, use or 
+ * other dealings in this Software without prior written authorization.
+ * 
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ * 
+ */
+
+var
+   net = require('net')
+  ,sys = require('sys')
+;
+
+var debug = function(obj) {
+  sys.print(sys.inspect(obj) + "\n");
+};
+
+var argv = process.argv;
+argv.shift(); argv.shift();
+var port = parseInt(argv.shift());
+var nodes = [];
+var node = undefined;
+node = argv.shift();
+while(node != undefined) {
+  nodes.push(node);
+  node = argv.shift();
+}
+
+if((port < 1 || port > 65535) || nodes.length < 1) {
+  sys.print(
+    "Invalid Usage\n" +
+    "app.js <listening port> <backend 1> <backend 2> <backend n>\n" +
+    "eg.\n" +
+    "app.js 10001 127.0.0.1:11001 127.0.0.1:11002 127.0.0.1:11003\n\n"
+  );
+  process.exit(1);
+}
+
+var last_nodeid = -1;
+var getNextNode = function() {
+  last_nodeid++;
+  if(last_nodeid == nodes.length) {
+    last_nodeid = 0;
+  }
+  return last_nodeid;
+}
+
+var server = net.createServer(function (srvsocket) {
+  srvsocket.setEncoding('utf8');
+  srvsocket.on('connect', function () {
+    var my_nodeid = getNextNode();
+    var first_nodeid = my_nodeid;
+    var nodeup = false;
+    var buff = "";
+    var node = nodes[my_nodeid].split(":");
+    var nodesock = net.createConnection(parseInt(node[1]), node[0]);
+    nodesock.setEncoding('utf8');
+    nodesock.on('error', function (error) {
+      if(error.errno == process.ECONNREFUSED) {
+        my_nodeid = getNextNode();
+        if(my_nodeid == first_nodeid) {
+          srvsocket.end("No nodes available");
+        } else {
+          node = nodes[my_nodeid].split(":");
+          nodesock.connect(parseInt(node[1]), node[0]);
+        }
+      }
+    });
+    nodesock.on('connect', function () {
+      nodeup = true;
+      if(buff != "") {
+        nodesock.write(buff, 'utf8');
+        buff = "";
+      }
+    });
+    nodesock.on('data', function (data) {
+      srvsocket.write(data, 'utf8');
+    });
+    nodesock.on('close', function (had_error) {
+      srvsocket.end();
+    });
+    srvsocket.on('data', function (data) {
+      if(nodeup != true) {
+        buff += data;
+      } else {
+        nodesock.write(data, 'utf8');
+      }
+    });
+    srvsocket.on('close', function (had_error) {
+      if(nodeup == true) {
+        nodesock.end();
+      }
+    });
+  });
+});
+server.listen(port);
